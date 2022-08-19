@@ -87,7 +87,7 @@ static uint16_t destination;
 */
 static uint16_t packet_size = RTE_ETHER_HDR_LEN;
 static uint8_t d_addr_bytes[RTE_ETHER_ADDR_LEN];
-
+static uint8_t s_addr_bytes[RTE_ETHER_ADDR_LEN];
 /*  track the -c option to see if it has been filled */
 static uint8_t use_custom_pkt_count = 0;
 /* Default number of packets: 128; user can modify it by -c <packet_number> in command line */
@@ -144,7 +144,7 @@ parse_app_args(int argc, char *argv[], const char *progname) {
         int c, i, count, dst_flag = 0;
         int values[RTE_ETHER_ADDR_LEN];
 
-        while ((c = getopt(argc, argv, "d:p:s:m:o:c:l")) != -1) {
+        while ((c = getopt(argc, argv, "d:p:s:m:o:c:l:r")) != -1) {
                 switch (c) {
                         case 'd':
                                 destination = strtoul(optarg, NULL, 10);
@@ -168,6 +168,21 @@ parse_app_args(int argc, char *argv[], const char *progname) {
                                         return -1;
                                 }
                                 break;
+                      
+                        case 'r':
+                                count = sscanf(optarg, "%x:%x:%x:%x:%x:%x", &values[0], &values[1], &values[2],
+                                               &values[3], &values[4], &values[5]);
+                                if (count == RTE_ETHER_ADDR_LEN) {
+                                        for (i = 0; i < RTE_ETHER_ADDR_LEN; ++i) {
+                                                s_addr_bytes[i] = (uint8_t)values[i];
+                                        }
+                                } else {
+                                        usage(progname);
+                                        return -1;
+                                }
+                                break;
+                      
+                      
                         case 'o':
 #ifdef LIBPCAP
                                 pcap_filename = strdup(optarg);
@@ -399,6 +414,7 @@ nf_setup(struct onvm_nf_local_ctx *nf_local_ctx) {
                         }
                         for (j = 0; j < RTE_ETHER_ADDR_LEN; ++j) {
                                 ehdr->d_addr.addr_bytes[j] = d_addr_bytes[j];
+                                ehdr->s_addr.addr_bytes[j] = s_addr_bytes[j]; 
                         }
                         ehdr->ether_type = LOCAL_EXPERIMENTAL_ETHER;
 

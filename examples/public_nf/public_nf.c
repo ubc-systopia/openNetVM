@@ -57,7 +57,7 @@
 #include "onvm_nflib.h"
 #include "onvm_pkt_helper.h"
 
-#define NF_TAG "basic_monitor"
+#define NF_TAG "public_nf"
 
 /* number of package between each print */
 static uint32_t print_delay = 1000000;
@@ -163,11 +163,24 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
         static uint32_t counter = 0;
         total_packets++;
         if (++counter == print_delay) {
-                do_stats_display(pkt);
+                //do_stats_display(pkt);
                 counter = 0;
         }
 
         meta->action = ONVM_NF_ACTION_OUT;
+
+        if (onvm_pkt_is_ipv4(pkt) & onvm_pkt_is_tcp(pkt)) {
+          RTE_LOG(INFO, APP, "TCP Packet received\n");
+          struct rte_ipv4_hdr* ipv4_header = onvm_pkt_ipv4_hdr(pkt);
+          struct rte_tcp_hdr* tcp_header = onvm_pkt_tcp_hdr(pkt);
+          //rte_pktmbuf_dump(stdout, pkt, 1500);        
+          int pkt_payload_len = onvm_pkt_payload_len(pkt);
+          printf("The tcp packet payload len: %d\n", pkt_payload_len);
+          // meta->action = ONVM_NF_ACTION_DROP;
+          //return 0;
+        }
+
+
 
         if (pkt->port == 0)
           meta->destination = 1; // Connected to 418
@@ -176,7 +189,7 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
 //        if (onvm_pkt_swap_src_mac_addr(pkt, meta->destination, ports) != 0) {
   //              RTE_LOG(INFO, APP, "ERROR: Failed to swap src mac with dst mac!\n");
     //    }
-          rte_pktmbuf_dump(stdout, pkt, 1500);        return 0;
+          return 0;
 }
 
 int

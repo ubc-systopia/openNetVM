@@ -160,6 +160,73 @@ onvm_pkt_tcp_hdr(struct rte_mbuf* pkt) {
         return (struct rte_tcp_hdr*)pkt_data;
 }
 
+
+uint8_t* onvm_pkt_payload(struct rte_mbuf* pkt) {
+
+        struct rte_ipv4_hdr* ipv4 = onvm_pkt_ipv4_hdr(pkt);
+
+        if (unlikely(
+                ipv4 ==
+                NULL)) {  // Since we aren't dealing with IPv6 packets for now, we can ignore anything that isn't IPv4
+                return NULL;
+        }
+        uint16_t eth_hdr_len = (uint16_t) sizeof(struct rte_ether_hdr);
+        uint16_t ip_hdr_len = (uint16_t) sizeof(struct rte_ipv4_hdr); 
+
+        if (ipv4->next_proto_id == IP_PROTOCOL_TCP) {
+                struct rte_tcp_hdr* tcp_hdr = onvm_pkt_tcp_hdr(pkt);
+                uint16_t tcp_hdr_len = (uint16_t) (tcp_hdr->data_off*4);
+                uint16_t hdr_len = eth_hdr_len + ip_hdr_len + tcp_hdr_len;
+                uint8_t* pkt_payload = rte_pktmbuf_mtod(pkt, uint8_t*) + hdr_len;        
+                return pkt_payload;
+        }else if(ipv4->next_proto_id == IP_PROTOCOL_UDP) {
+                uint16_t udp_hdr_len = (uint16_t) sizeof(struct rte_udp_hdr);
+                uint16_t hdr_len = eth_hdr_len + ip_hdr_len + udp_hdr_len;
+                uint8_t* pkt_payload = rte_pktmbuf_mtod(pkt, uint8_t*) + hdr_len;        
+                return pkt_payload;
+        }
+        return NULL; 
+}
+
+
+
+int onvm_pkt_payload_len(struct rte_mbuf* pkt) {
+
+        struct rte_ipv4_hdr* ipv4 = onvm_pkt_ipv4_hdr(pkt);
+
+        if (unlikely(
+                ipv4 ==
+                NULL)) {  // Since we aren't dealing with IPv6 packets for now, we can ignore anything that isn't IPv4
+                return -1;
+        }
+        uint16_t eth_hdr_len = (uint16_t) sizeof(struct rte_ether_hdr);
+        uint16_t ip_hdr_len = (uint16_t) sizeof(struct rte_ipv4_hdr); 
+
+        if (ipv4->next_proto_id == IP_PROTOCOL_TCP) {
+                struct rte_tcp_hdr* tcp_hdr = onvm_pkt_tcp_hdr(pkt);
+                uint16_t tcp_hdr_len = (uint16_t) (tcp_hdr->data_off>>4)*4;
+                printf("ip_hdr->total_len: %u\n", rte_cpu_to_be_16(ipv4->total_length)); 
+                printf("pkt->data_off: %u\n", (uint16_t)(pkt->data_off));
+                printf("tcp_hdr->data_off: %u\n", tcp_hdr_len);
+                printf("rte_tcp_hdr len: %lu\n", sizeof(struct rte_tcp_hdr));
+                printf("rte_ip_hdr len: %u\n", ip_hdr_len);
+                printf("rte_eth_hdr len: %u\n", eth_hdr_len);
+                printf("pkt->data_len: %u\n", pkt->data_len);
+                // uint16_t tcp_hdr_len = (uint16_t) sizeof(struct rte_tcp_hdr);
+                uint16_t hdr_len = ip_hdr_len + tcp_hdr_len;
+                int pkt_payload_len = (int)(rte_cpu_to_be_16(ipv4->total_length) - hdr_len);        
+                return (int)pkt_payload_len;
+        }else if(ipv4->next_proto_id == IP_PROTOCOL_UDP) {
+                uint16_t udp_hdr_len = (uint16_t) sizeof(struct rte_udp_hdr);
+                uint16_t hdr_len = eth_hdr_len + ip_hdr_len + udp_hdr_len;
+                //int pkt_payload_len = (int)(pkt->data_len - hdr_len);        
+                return (int)hdr_len;
+        }
+        return -1; 
+}
+
+
+
 struct rte_udp_hdr*
 onvm_pkt_udp_hdr(struct rte_mbuf* pkt) {
         struct rte_ipv4_hdr* ipv4 = onvm_pkt_ipv4_hdr(pkt);

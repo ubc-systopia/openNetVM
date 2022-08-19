@@ -34,43 +34,29 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#Set this to 1 if libpcap is installed to use pcap replay
-ENABLE_PCAP=1
-
 ifeq ($(RTE_SDK),)
 $(error "Please define RTE_SDK environment variable")
 endif
 
-RTE_TARGET ?= x86_64-native-linuxapp-gcc
+RTE_TARGET ?= $(RTE_TARGET)
 
 # Default target, can be overriden by command line or environment
 include $(RTE_SDK)/mk/rte.vars.mk
 
 # binary name
-APP = speed_tester
+APP = public_nf
 
 # all source are stored in SRCS-y
-SRCS-y := speed_tester.c
+SRCS-y := public_nf.c
 
 # OpenNetVM path
-ONVM ?= $(SRCDIR)/../../onvm
+ONVM= $(SRCDIR)/../../onvm
 
-CFLAGS += $(WERROR_FLAGS) -O3 $(USER_FLAGS)
+# CFLAGS += $(WERROR_FLAGS) -O3 -g
 
 CFLAGS += -I$(ONVM)/onvm_nflib
 CFLAGS += -I$(ONVM)/lib
 LDFLAGS += $(ONVM)/onvm_nflib/$(RTE_TARGET)/libonvm.a
 LDFLAGS += $(ONVM)/lib/$(RTE_TARGET)/lib/libonvmhelper.a -lm
-
-ifeq ($(ENABLE_PCAP), 1)
-LDFLAGS += -lpcap
-CFLAGS +=-D LIBPCAP
-endif
-
-# workaround for a gcc bug with noreturn attribute
-# http://gcc.gnu.org/bugzilla/show_bug.cgi?id=12603
-ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
-CFLAGS_main.o += -Wno-return-type
-endif
 
 include $(RTE_SDK)/mk/rte.extapp.mk
