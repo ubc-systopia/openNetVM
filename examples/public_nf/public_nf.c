@@ -56,8 +56,11 @@
 
 #include "onvm_nflib.h"
 #include "onvm_pkt_helper.h"
-
+#include "../shared_buffer/shared_memory.h"
 #define NF_TAG "public_nf"
+
+#include<sys/ipc.h>
+#include<sys/shm.h>
 
 /* number of package between each print */
 static uint32_t print_delay = 1000000;
@@ -65,6 +68,10 @@ static uint32_t print_delay = 1000000;
 static uint32_t total_packets = 0;
 static uint64_t last_cycle;
 static uint64_t cur_cycles;
+
+
+/* Shared Memory */
+struct circular_buffer* upstream_cb;
 
 /* shared data structure containing host port info */
 extern struct port_info *ports;
@@ -160,36 +167,43 @@ callback_handler(__attribute__((unused)) struct onvm_nf_local_ctx *nf_local_ctx)
 static int
 packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                __attribute__((unused)) struct onvm_nf_local_ctx *nf_local_ctx) {
-        static uint32_t counter = 0;
-        total_packets++;
-        if (++counter == print_delay) {
-                //do_stats_display(pkt);
-                counter = 0;
-        }
+  static uint32_t counter = 0;
+  total_packets++;
+  if (++counter == print_delay) {
+          //do_stats_display(pkt);
+          counter = 0;
+  }
 
-        meta->action = ONVM_NF_ACTION_OUT;
+  meta->action = ONVM_NF_ACTION_OUT;
 
-        if (onvm_pkt_is_ipv4(pkt) & onvm_pkt_is_tcp(pkt)) {
-          RTE_LOG(INFO, APP, "TCP Packet received\n");
-          struct rte_ipv4_hdr* ipv4_header = onvm_pkt_ipv4_hdr(pkt);
-          struct rte_tcp_hdr* tcp_header = onvm_pkt_tcp_hdr(pkt);
-          //rte_pktmbuf_dump(stdout, pkt, 1500);        
-          int pkt_payload_len = onvm_pkt_payload_len(pkt);
-          printf("The tcp packet payload len: %d\n", pkt_payload_len);
-          // meta->action = ONVM_NF_ACTION_DROP;
-          //return 0;
-        }
+  if (onvm_pkt_is_ipv4(pkt) & onvm_pkt_is_tcp(pkt)) {
+    RTE_LOG(INFO, APP, "TCP Packet received\n");
+    // Extracting headers of the packet
+    struct rte_ether_hdr* eth_header = onvm_pkt_ether_hdr(pkt);
+    struct rte_ipv4_hdr* ipv4_header = onvm_pkt_ipv4_hdr(pkt);
+    struct rte_tcp_hdr* tcp_header = onvm_pkt_tcp_hdr(pkt);
+    
+    // Getting the header length.
+    uint16_t eth_header_len = (uint16_t) sizeof(struct rte_ether_hdr); 
+    uint16_t ipv4_header_len = (uint16_t) sizeof(struct rte_ipv4_hdr); 
+    uint16_t tcp_header_len = onvm_pkt_tcp_hdr_len(pkt); 
+
+
+    //rte_pktmbuf_dump(stdout, pkt, 1500);        
+    int pkt_payload_len = onvm_pkt_payload_len(pkt);
+    printf("the tcp header len: %u\n", tcp_header_len);
+    printf("The tcp packet payload len: %d\n", pkt_payload_len);
+    // meta->action = ONVM_NF_ACTION_DROP;
+    //return 0;
+  }
 
 
 
-        if (pkt->port == 0)
-          meta->destination = 1; // Connected to 418
-        else
-          meta->destination = 0; // Connected to 416
-//        if (onvm_pkt_swap_src_mac_addr(pkt, meta->destination, ports) != 0) {
-  //              RTE_LOG(INFO, APP, "ERROR: Failed to swap src mac with dst mac!\n");
-    //    }
-          return 0;
+    if (pkt->port == 0)
+      meta->destination = 1; // Connected to 418
+    else
+      meta->destination = 0; // Connected to 416
+    return 0;
 }
 
 int
@@ -198,6 +212,24 @@ main(int argc, char *argv[]) {
         struct onvm_nf_function_table *nf_function_table;
         int arg_offset;
         const char *progname = argv[0];
+        
+        // Shared memory initialization
+        int shmid = shmget(SHM_KEY, sizeof(struct circular_buffer), 0644|IPC_CREAT);
+        if (shmid == -1) {
+          perror("Shared memory");
+          return 1;
+        }
+
+        upstream_cb = (struct circular_buffer*) shmat(shmid, NULL, 0);
+        if (upstream_cb == (void *) -1) {
+          perror("Shared memory attach");
+          return 1;
+        }
+        
+        if(cb_init(upstream_cb) < 0){
+          printf("Error: The initialization of upstream_cb has failed.\n");
+          return 1;
+        }
 
         nf_local_ctx = onvm_nflib_init_nf_local_ctx();
         onvm_nflib_start_signal_handler(nf_local_ctx, NULL);

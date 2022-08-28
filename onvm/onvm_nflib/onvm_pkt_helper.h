@@ -114,11 +114,14 @@ onvm_pkt_udp_hdr(struct rte_mbuf* pkt);
 struct rte_ipv4_hdr*
 onvm_pkt_ipv4_hdr(struct rte_mbuf* pkt);
 
-uint8_t*
+unsigned char*
 onvm_pkt_payload(struct rte_mbuf* pkt);
 
 int 
 onvm_pkt_payload_len(struct rte_mbuf* pkt);
+
+uint16_t
+onvm_pkt_tcp_hdr_len(struct rte_mbuf* pkt);
 /**
  * Check the type of a packet. Return 1 if packet is of the specified type, else 0
  */
