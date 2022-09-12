@@ -51,18 +51,21 @@
 
 #include <rte_common.h>
 #include <rte_cycles.h>
+#include <rte_ethdev.h>
+#include <rte_mempool.h>
+#include <rte_ring.h>
 #include <rte_ip.h>
 #include <rte_mbuf.h>
 
 #include "onvm_nflib.h"
 #include "onvm_pkt_helper.h"
 #include "../shared_buffer/shared_memory.h"
-#define NF_TAG "public_nf"
-
 #include<sys/ipc.h>
 #include<sys/shm.h>
-#include<sys/types.h> 
+#include<sys/types.h>
 
+#define NF_TAG "isolated_nf"
+#define PKTMBUF_POOL_NAME "MProc_pktmbuf_pool"
 
 /* number of package between each print */
 static uint32_t print_delay = 1000000;
@@ -74,7 +77,6 @@ static uint64_t cur_cycles;
 
 /* Shared Memory */
 struct circular_buffer* upstream_cb;
-int shmid;
 
 /* shared data structure containing host port info */
 extern struct port_info *ports;
@@ -177,9 +179,9 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
           counter = 0;
   }
 
-  meta->action = ONVM_NF_ACTION_OUT;
-
-  if (onvm_pkt_is_ipv4(pkt) & onvm_pkt_is_tcp(pkt)) {
+  meta->action = ONVM_NF_ACTION_DROP;
+  /*
+  if (onvm_pkt_is_ipv4(pkt) & onvm_pkt_is_tcp(pkt)){
     RTE_LOG(INFO, APP, "TCP Packet received\n");
     // Extracting headers of the packet
     struct rte_ether_hdr* eth_header = onvm_pkt_ether_hdr(pkt);
@@ -209,18 +211,9 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
                                .ethhdr_ = eth_header,
                                .payload_ = payload                           
     };
-    
     if(cb_push_back(upstream_cb, &pc) < 0){
       printf("Failed to push packet upstream_cb!\n");
     }
-
-    
-    if(upstream_cb->count >= 10){
-      struct pkt_container pc_test;   
-      if(cb_pop_front(upstream_cb, &pc_test) < 0){
-        printf("Failed to pop a test packet from upstream_cb\n");
-      }
-    } 
     
 
 
@@ -231,7 +224,7 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
     // meta->action = ONVM_NF_ACTION_DROP;
     //return 0;
   }
-
+  */
 
 
     if (pkt->port == 0)
@@ -241,7 +234,72 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
     return 0;
 }
 
+void nf_setup(struct onvm_nf_local_ctx *nf_local_ctx){
 
+  struct rte_mempool *pktmbuf_pool;
+  pktmbuf_pool = rte_mempool_lookup(PKTMBUF_POOL_NAME);
+  printf("Flag in send\n"); 
+  if(pktmbuf_pool == NULL){
+    onvm_nflib_stop(nf_local_ctx);
+    rte_exit(EXIT_FAILURE, "cannot find mbuf pool!\n"); 
+  }
+  
+  struct rte_mbuf* pkt;
+  struct onvm_pkt_meta *pmeta;
+  struct rte_ether_hdr eth_header;
+  struct rte_ipv4_hdr ipv4_header;
+  struct rte_tcp_hdr tcp_header;
+
+  pkt = rte_pktmbuf_alloc(pktmbuf_pool);
+  if (pkt == NULL){
+    printf("Failded to allocate packet\n");
+  }
+
+  /* let's try to send a packet*/
+  struct pkt_container pc;
+  printf("Tail cell size in upstream_cb is: %zu\n", upstream_cb->tail_ind);
+
+        
+  if(cb_pop_front(upstream_cb, &pc) < 0){
+    printf("Failed to pop from the circular buffer\n"); 
+  }
+  // Ethernet Header
+  struct rte_ether_hdr *eth = (struct rte_ether_hdr*) rte_pktmbuf_append(pkt, pc.ethhdr_len_);
+  memcpy(eth, pc.ethhdr_, pc.ethhdr_len_);
+  
+  // IP header
+  struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr*) rte_pktmbuf_append(pkt, pc.iphdr_len_);
+  memcpy(ip, pc.iphdr_, pc.iphdr_len_);
+
+  // TCP header
+  struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr*) rte_pktmbuf_append(pkt, pc.tcphdr_len_);
+  memcpy(tcp, pc.tcphdr_, pc.tcphdr_len_);
+
+  // Payload of the packet
+  unsigned char *payload = (unsigned char*) rte_pktmbuf_append(pkt, pc.payload_len_);
+  memcpy(payload, pc.payload_, pc.payload_len_);
+
+  // Writing the metadata for packet
+  pmeta = onvm_get_pkt_meta(pkt);
+  pmeta-> destination = 0; // send it to 416
+  pmeta-> action = ONVM_NF_ACTION_OUT;
+  
+  // Something about hash and rss that I haven't done here.
+  // Hopefully it won't be a problem :D
+
+  // Send packet 
+  onvm_nflib_return_pkt(nf_local_ctx->nf, pkt);
+
+
+  // Now let's try to extract 125 bytes from the circular buffer;
+  size_t data_size = 125;
+  unsigned char* data_ptr = (unsigned char*) malloc(data_size);
+  printf("The current size of the circular buffer is: %zu.\n", upstream_cb->aggregated_size);
+  if(cb_pop_data_bysize(upstream_cb, data_ptr, data_size) < 0){
+    printf("You buddy, you really thought you can implement it in your first trial? heh, good luck\n"); 
+  }
+  printf("The current size of the circular buffer is: %zu.\n", upstream_cb->aggregated_size);
+}
 
 
 int
@@ -250,31 +308,32 @@ main(int argc, char *argv[]) {
         struct onvm_nf_function_table *nf_function_table;
         int arg_offset;
         const char *progname = argv[0];
-        
+
         // Shared memory initialization
-        shmid = shmget(SHM_KEY, sizeof(struct circular_buffer), 0644|IPC_CREAT);
+        printf("The size of circular_buffer is: %zu\n", sizeof(struct circular_buffer)); 
+        int shmid = shmget(SHM_KEY, sizeof(struct circular_buffer), 0644|IPC_CREAT);
         if (shmid == -1) {
           perror("Shared memory");
           return 1;
         }
 
-        upstream_cb = (struct circular_buffer*) shmat(shmid, NULL, 0);
+        upstream_cb =  shmat(shmid, NULL, 0);
         if (upstream_cb == (void *) -1) {
           perror("Shared memory attach");
           return 1;
         }
+        printf("Shared memory created without error\n"); 
         
-        if(cb_init(upstream_cb) < 0){
-          printf("Error: The initialization of upstream_cb has failed.\n");
-          return 1;
-        }
-
         nf_local_ctx = onvm_nflib_init_nf_local_ctx();
+        
         onvm_nflib_start_signal_handler(nf_local_ctx, NULL);
 
         nf_function_table = onvm_nflib_init_nf_function_table();
         nf_function_table->pkt_handler = &packet_handler;
         nf_function_table->user_actions = &callback_handler;
+        nf_function_table->setup = &nf_setup; 
+
+        
 
         if ((arg_offset = onvm_nflib_init(argc, argv, NF_TAG, nf_local_ctx, nf_function_table)) < 0) {
                 onvm_nflib_stop(nf_local_ctx);
@@ -285,6 +344,7 @@ main(int argc, char *argv[]) {
                         rte_exit(EXIT_FAILURE, "Failed ONVM init\n");
                 }
         }
+        
 
         argc -= arg_offset;
         argv += arg_offset;

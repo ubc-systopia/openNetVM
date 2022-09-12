@@ -3,6 +3,24 @@
 #define BUFF_CAP 1000
 #define SHM_KEY 0x1234
 
+#define min(a,b) \
+     ({ __typeof__ (a) _a = (a); \
+        __typeof__ (b) _b = (b); \
+        _a < _b ? _a : _b; })
+#define max(a,b) \
+     ({ __typeof__ (a) _a = (a); \
+        __typeof__ (b) _b = (b); \
+        _a > _b ? _a : _b; })
+
+
+// **************** test shared mamory ***********************//
+struct shmseg{
+ int cnt;
+ int complete;
+ char buf[1024];
+};
+
+
 // **************** Helper functions ***********************//
 void change_address_to_string(unsigned int addr,char * ip_string){
   int i;
@@ -32,6 +50,7 @@ typedef struct pkt_container{
 } pkt_container;
 
 typedef struct metadata{
+  uint16_t cell_head_ind;
   uint16_t size;
   uint32_t pkt_final_dst;
 } metadata;
@@ -45,21 +64,21 @@ typedef struct buffer_cell{
 
 typedef struct circular_buffer{
   struct buffer_cell buffer[BUFF_CAP];     // data buffer
-  struct buffer_cell* buffer_end; // end of data buffer
   size_t count;     // number of items in the buffer
-  struct buffer_cell* head;       // pointer to head
-  struct buffer_cell* tail;       // pointer to tail
+  size_t head_ind;       // pointer to head
+  size_t tail_ind;       // pointer to tail
+  size_t aggregated_size;
 } circular_buffer;
 
 
 static int cb_init(circular_buffer *cb){
   printf("CircularBuffer: starting initialization function for circular buffer.\n");
-  cb->buffer_end = cb->buffer + BUFF_CAP;
 
   cb->count = 0;
 
-  cb->head = cb->buffer;
-  cb->tail = cb->buffer;
+  cb->head_ind = 0;
+  cb->tail_ind = 0;
+  cb->aggregated_size = 0;
   printf("CircularBuffer: Initialization function for circular buffer executed.\n");
   return 0;
 }
@@ -71,7 +90,8 @@ static int cb_push_back(circular_buffer *cb, struct pkt_container* pkt){
     printf("CircularBuffer: There is no more capacity in the circular buffer.\n");
     return -1;
   }
-  char* tmp_head_pointer  = (char*) cb->head->cell_content;
+  char* tmp_head_pointer  = (char*) cb->buffer[cb->head_ind].cell_content;
+  cb->buffer[cb->head_ind].cell_metadata.cell_head_ind = 0;
 
   // Here, we received a pointer to a packet container with a packet inside it.
   // We want to write the different parts of container one-by-one to be able to
@@ -104,19 +124,15 @@ static int cb_push_back(circular_buffer *cb, struct pkt_container* pkt){
 
 
   uint16_t data_size = sizeof(unsigned int)*4 + pkt->tcphdr_len_ + pkt->iphdr_len_ + pkt->ethhdr_len_ + pkt->payload_len_;
-  cb->head->cell_metadata.size = data_size;
-  cb->head->cell_metadata.pkt_final_dst = rte_be_to_cpu_32(pkt->iphdr_->dst_addr); 
+  cb->buffer[cb->head_ind].cell_metadata.size = data_size;
+  cb->buffer[cb->head_ind].cell_metadata.pkt_final_dst = rte_be_to_cpu_32(pkt->iphdr_->dst_addr); 
 
   // Now we coppied all information we had in the packet container to one cell of the ring buffer.
   // The next step is to update the pointer to point to the next cell of the ring buffer.
-  
-  cb->head = cb->head ++;
-
-  if(cb->head == cb->buffer_end){
-    cb->head = cb->buffer;
-  }
-
+  cb->aggregated_size += data_size; 
+  cb->head_ind = (cb->head_ind + 1) % BUFF_CAP;
   cb->count++;
+
   printf( "CircularBuffer: One element with the size of %d has been pushed to the circular buffer successfully, number of elements: %zu.\n", data_size, cb->count);
   return 0;
 }
@@ -128,16 +144,20 @@ static int cb_pop_front(circular_buffer *cb, struct pkt_container* pkt){
     // handle error (error handling should move to the actual module)
     return -1;
   }
-
+  if(cb->buffer[cb->tail_ind].cell_metadata.cell_head_ind != 0){
+    printf("CircularBuffer: The packet has been fragmented before, you cannot pop it as a complete packet.");
+    return -1; 
+  }
   // Here we received an empty packet container struct and we want to fill its different
   // fields one-by-one based on the raw memory.
-  char* tmp_tail_pointer = (char*) cb->tail->cell_content;
-
+  char* tmp_tail_pointer = (char*) cb->buffer[cb->tail_ind].cell_content;
+  
   pkt->tcphdr_len_ = *((uint16_t*)tmp_tail_pointer); 
   tmp_tail_pointer = (char*)tmp_tail_pointer + sizeof(pkt->tcphdr_len_);
 
   pkt->iphdr_len_ = *((uint16_t*)tmp_tail_pointer ); 
   tmp_tail_pointer = (char*)tmp_tail_pointer + sizeof(pkt->iphdr_len_);
+  
 
   pkt->ethhdr_len_ = *((uint16_t*)tmp_tail_pointer); 
   tmp_tail_pointer = (char*)tmp_tail_pointer + sizeof(pkt->ethhdr_len_);
@@ -157,14 +177,12 @@ static int cb_pop_front(circular_buffer *cb, struct pkt_container* pkt){
   pkt->payload_ = (unsigned char*)tmp_tail_pointer;
   tmp_tail_pointer = (char*)tmp_tail_pointer + pkt->payload_len_;
 
+  printf("trying to read a packet form cb\n");
   // Now we extract all members of packet container one-by-one from the memory.
   // We should move the tail to the next cell of the ring buffer.
-  int data_size = (int) cb->tail->cell_metadata.size;
-  cb->tail = cb->tail ++;
-
-  if(cb->tail == cb->buffer_end){
-    cb->tail = cb->buffer;
-  }
+  int data_size = (int) cb->buffer[cb->tail_ind].cell_metadata.size;
+  cb->aggregated_size -= data_size;
+  cb->tail_ind = (cb->tail_ind + 1) % BUFF_CAP;
   cb->count--;
  
   printf( "CircularBuffer: One element with size of %d has been poped from the circular buffer successfully, number of elements: %zu.\n", data_size, cb->count);
@@ -177,51 +195,91 @@ static int cb_push_back_raw(struct circular_buffer* cb, char* item, size_t item_
     printf( "CircularBuffer: There is no more capacity in the circular buffer.\n");
     return -1;
   }
-  memcpy(cb->head->cell_content, item, item_size);
-  cb->head->cell_metadata.size = item_size;
-  cb->head->cell_metadata.pkt_final_dst = 0;
+
+  char* tmp_head_pointer  = (char*) cb->buffer[cb->head_ind].cell_content;
+  cb->buffer[cb->head_ind].cell_metadata.cell_head_ind = 0;
+
+  memcpy(tmp_head_pointer, item, item_size);
+  cb->buffer[cb->head_ind].cell_metadata.size = item_size;
+  cb->buffer[cb->head_ind].cell_metadata.pkt_final_dst = 0;
   // Now we coppied all information we had in the packet container to one cell of the ring buffer.
   // The next step is to update the pointer to point to the next cell of the ring buffer.
-  cb->head = cb->head ++;
-
-  if(cb->head == cb->buffer_end){
-    cb->head = cb->buffer;
-  }
-
+  cb->aggregated_size += item_size;
+  cb->head_ind = (cb->head_ind + 1) % BUFF_CAP;
   cb->count++;
+
   printf( "CircularBuffer: One element has been pushed to the circular buffer successfully, number of elements: %zu.\n", cb->count);
   return 0;
 
 }
 
-static int cb_pop_front_raw(struct circular_buffer* cb, struct buffer_cell* bc){
+static int cb_pop_front_raw(struct circular_buffer* cb, unsigned char* data_ptr, size_t item_size){
   if(cb->count == 0){
     printf( "CircularBuffer: There is no more data in the circular buffer.\n");
     // handle error (error handling should move to the actual module)
     return -1;
   }
-  if(cb->tail->cell_metadata.pkt_final_dst == 0){
+  if(cb->buffer[cb->tail_ind].cell_metadata.size < item_size){
+    printf("Circular buffer: there is less data than your request in this cell\n"); 
+    return -1;
+  }
+
+  if(cb->buffer[cb->tail_ind].cell_metadata.pkt_final_dst == 0){
     printf( "CircularBuffer: The final destination in metadata field hasn't been specified.\n");
     return -1;
   }
-  
-  memcpy(bc->cell_content, cb->tail->cell_content, cb->tail->cell_metadata.size); 
-  bc->cell_metadata.size = cb->tail->cell_metadata.size;
-  bc->cell_metadata.pkt_final_dst = cb->tail->cell_metadata.pkt_final_dst;
-  
-  // Now we extract all members of packet container one-by-one from the memory.
-  // We should move the tail to the next cell of the ring buffer.
-  cb->tail = cb->tail ++;
+ 
+  uint16_t cell_content_head_ind = cb->buffer[cb->tail_ind].cell_metadata.cell_head_ind;
+  char* tmp_tail_pointer = (char*) cb->buffer[cb->tail_ind].cell_content + cell_content_head_ind;
+ 
 
-  if(cb->tail == cb->buffer_end){
-    cb->tail = cb->buffer;
+  // Provding the requested data 
+  memcpy(data_ptr, tmp_tail_pointer, item_size); 
+  
+  // Updating cell metadata after (potentially) partial dequeue
+  cb->buffer[cb->tail_ind].cell_metadata.size = cb->buffer[cb->tail_ind].cell_metadata.size - item_size;
+  cb->buffer[cb->tail_ind].cell_metadata.cell_head_ind = cb->buffer[cb->tail_ind].cell_metadata.cell_head_ind + item_size;
+ 
+  // We are done with this cell if there is no more data in it
+  cb->aggregated_size -= item_size;
+  if(cb->buffer[cb->tail_ind].cell_metadata.size == 0){
+    cb->tail_ind = (cb->tail_ind + 1) % BUFF_CAP;
+    cb->count--;
   }
-  cb->count--;
  
   printf( "CircularBuffer: One element has been poped from the circular buffer successfully, number of elements: %zu.\n", cb->count);
-  return cb->tail->cell_metadata.size;
+  return item_size;
 }
 
+static int cb_pop_data_bysize(circular_buffer *cb,  unsigned char* data_ptr, size_t data_size){
+  if(cb->aggregated_size < data_size){
+    printf("CircularBuffer: There is less data in circular buffer than requested amount.\n"); 
+    return -1;
+  }
+  unsigned char* tmp_data_ptr = data_ptr;
+  size_t remaining_data = data_size;
+  size_t tail_cell_size;
+  size_t data_size_needed_from_cell;
+
+
+  while (remaining_data != 0){
+    tail_cell_size = cb->buffer[cb->tail_ind].cell_metadata.size;
+    data_size_needed_from_cell = min(tail_cell_size, remaining_data);
+
+    if( cb_pop_front_raw(cb, tmp_data_ptr, data_size_needed_from_cell) < 0){
+      printf("CircularBuffer: Something bad happened when trying to extract raw data from the queue.\n"); 
+      return -1;
+    } 
+    // We extracted some data and write it to the allocated memory, let's move the pointer for next writes.
+    tmp_data_ptr += data_size_needed_from_cell;
+
+    // We extracted some data from the ceell, let's update remaining data required to be extracted in the next rounds
+    remaining_data -= data_size_needed_from_cell;
+  } 
+  
+  printf("CircularBuffer: %zu bytes has been poped from the circular buffer and there is %zu bytes in it.\n", data_size, cb->aggregated_size);
+  return data_size;
+}
 
 // ***************** End-hosts specifications ***************//
 /*
