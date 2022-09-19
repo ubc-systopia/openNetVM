@@ -238,7 +238,7 @@ parse_portmask(uint8_t max_ports, const char *portmask) {
                 return -1;
 
         /* convert parameter to a number and verify */
-        pm = strtoul(portmask, &end, 16);
+        pm = strtoul(portmask, &end, 0);
         if (pm == 0) {
                 printf("WARNING: No ports are being used.\n");
                 return 0;

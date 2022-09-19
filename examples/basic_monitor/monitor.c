@@ -169,10 +169,20 @@ packet_handler(struct rte_mbuf *pkt, struct onvm_pkt_meta *meta,
 
         meta->action = ONVM_NF_ACTION_OUT;
 
-        if (pkt->port == 0)
-          meta->destination = 1; // Connected to 418
-        else
-          meta->destination = 0; // Connected to 416
+        switch (pkt->port) {
+            case 0:
+                meta->destination = 1;
+                break;
+            case 1:
+                meta->destination = 0;
+                break;
+            case 2:
+                meta->destination = 3;
+                break;
+            case 3:
+                meta->destination = 2;
+                break;
+        }
 //        if (onvm_pkt_swap_src_mac_addr(pkt, meta->destination, ports) != 0) {
   //              RTE_LOG(INFO, APP, "ERROR: Failed to swap src mac with dst mac!\n");
     //    }
